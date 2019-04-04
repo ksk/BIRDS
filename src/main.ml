@@ -25,6 +25,7 @@ open Ast2fol;;
 let host = ref "192.168.56.101";;
 let port = ref 5432;;
 let user = ref "postgres";;
+let dejima_user = ref "dejima";;
 let password = ref "12345678";;
 let dbname = ref "datalogdb";;
 let debug = ref false;;
@@ -34,6 +35,7 @@ let verification = ref false;;
 let inc = ref false;;
 let optimize = ref false;;
 let inputf = ref "";;
+let inputshell = ref "";;
 let outputf = ref "";;
 let outputlean = ref "";;
 let dbschema = ref "public";;
@@ -43,9 +45,10 @@ let usage = "usage: " ^ Sys.argv.(0) ^ " [OPTIONS]"
 let speclist = [
   ("-db", Arg.Unit (fun () -> debug := true),  " print debugging information");
   ("-f", Arg.String (fun s -> inputf := s),   "file read program from file, if not chosen, read from stdin");
+  ("-b", Arg.String (fun s -> inputshell := s),   "file shell script file specifying the action, which will be executed when there is any update on the view, if not chosen, execute nothing");
   ("-o", Arg.String (fun s -> outputf := s),   "file write program out file, if not chosen, print to stdout");
   ("-l", Arg.String (fun s -> outputlean := s),   "file write lean verification out file");
-  ("-s", Arg.String (fun s -> dbschema := s),  "schema_name database schema name to connect to (default: public)");
+  ("-s", Arg.String (fun s -> dbschema := s),  "schema database schema name to connect to (default: public)");
   ("-h", Arg.String (fun s -> host := s),      "host database server host (default: \"localhost\")");
   ("-c", Arg.Unit (fun () -> connectdb := true),      " connect and run sql on database server");
   ("-import", Arg.Unit (fun () -> importschema := true),      " connect and import data schema from database server");
@@ -54,6 +57,7 @@ let speclist = [
   ("-e", Arg.Unit (fun () -> optimize := true),      " optimize datalog rules");
   ("-p", Arg.Int    (fun d -> port := d),      "port database server port (default: \"5432\")");
   ("-U", Arg.String (fun s -> user := s),      "user database user (default: \"postgres\")");
+  ("-g", Arg.String (fun s -> dejima_user := s),      "user special user for global dejima synchronization (default: \"dejima\")");
   ("-w", Arg.String (fun s -> password := s),  "password database user password (default: 12345678)");
   ("-d", Arg.String (fun s -> dbname := s),    "dbname database name to connect to (default: \"datalogdb\")");
   ("-m", Arg.Int (fun m -> mode := m),         "mode {1: For putback view update datalog program, 2: For view update datalog program containing view definition, update strategy and integrity constraints, 3: For only view definition datalog program} (default: 1)");
@@ -89,6 +93,11 @@ let print_conn_info conn =
 ;;
 
 let main () =
+  (* there are three tasks for the transformation program
+     - derive put datalog program to get datalog program
+     - translate get datalog program to sql language (need a query predicate (view))
+     - translate put datalog program to PL/pgSQL procedure triggers (need update predicates (source tables))
+  *)
   try 
     let chan = if !inputf = "" then stdin else open_in !inputf in
     let lexbuf = Lexing.from_channel chan in 
@@ -97,6 +106,7 @@ let main () =
     (* while true do *)
     try
       let original_ast = Parser.main Lexer.token lexbuf in 
+      let shell_script = if !inputshell = "" then "#!/bin/sh\necho \"true\"" else (String.concat "\n" @@ read_file (!inputshell)) in
       let ast = 
       (* get source schema from database system *)
         if (!importschema) then 
@@ -167,14 +177,14 @@ let main () =
             verify_fo_lean (!debug) lean_code 
           else 0, "" in 
         if not (validity=0) then 
-          (print_endline @@ "The program is not well-behaved \nExit code: " ^ string_of_int validity
+          (print_endline @@ "Well-behavedness is not validated \nExit code: " ^ string_of_int validity
           ^ (if (!debug) then "\nError messange: "^ message else ""); exit 1)
         else
-          (
+          (if (!verification) then print_endline @@ "Program is well-behaved";
           let oc =if !outputf = "" then stdout else open_out !outputf  in 
           let sql = Ast2sql.unfold_view_sql (!dbschema) (!debug) ast2 in
           fprintf oc "%s\n" sql;
-          let trigger_sql = Ast2sql.unfold_delta_trigger_stt (!dbschema) (!debug) (!inc) (!optimize) (Expr.constraint2rule ast2) in
+          let trigger_sql = Ast2sql.unfold_delta_trigger_stt (!dbschema) (!debug) shell_script (!dejima_user) (!inc) (!optimize) (Expr.constraint2rule ast2) in
           fprintf oc "%s\n" trigger_sql;
           
           if (!connectdb) then 
@@ -295,9 +305,17 @@ let test() =
     | LexErr msg -> print_endline (msg^":\nError: Illegal characters")
     | ParseErr msg -> print_endline (msg^":\nError: Syntax error")
 
+let small_test() = 
+  let l = [1;2;3] in 
+  let powerset = allnonemptysubsets l in 
+  let sortlst = Lib.sort (fun a b -> List.length a < List.length b) powerset in
+  List.iter (fun x -> List.iter (fun a -> print_int a) x; print_endline "; ") sortlst
+;;
+
 (** mainly a call to the above main function *)
 let _ =
   try main () with
+  (* try small_test () with *)
   (* try test () with *)
   | Error e -> prerr_endline (string_of_error e)
   | e -> prerr_endline (Printexc.to_string e)
