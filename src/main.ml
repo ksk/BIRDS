@@ -155,6 +155,7 @@ let main () =
           bi_prog
           )
         else ast in
+        Dejima.print_info ast ast2;
         let lean_code = validity_lean_code_of_datalog (!debug) (Expr.constraint2rule ast2) in 
         if not (!outputlean = "") then 
           (let ol =  open_out (!outputlean)  in  
